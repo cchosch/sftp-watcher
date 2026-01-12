@@ -1,12 +1,14 @@
-import os
-import sys
 import json
-import time
+import os
 import pathlib
+import sys
+import threading
+import time
 from ftplib import FTP, error_perm
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+
 import paramiko
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 
 def load_ftp_config(project_root):
@@ -180,8 +182,6 @@ def upload_file_sftp(project_root, rel_file_path, cfg):
 
     filename = os.path.basename(rel_path_posix)
 
-    print(f"[INFO] (SFTP) Uploading {local_path} -> {remote_dir}/{filename}")
-
     ssh, sftp = create_sftp_client(
         host=cfg["host"],
         username=cfg["username"],
@@ -206,7 +206,7 @@ def upload_file_sftp(project_root, rel_file_path, cfg):
             remote_file_path = f"/{filename}"
 
         sftp.put(local_path, remote_file_path)
-        print("[INFO] (SFTP) Upload complete.")
+        print(f"[INFO] (SFTP) Upload complete {filename}")
     finally:
         sftp.close()
         ssh.close()
@@ -225,20 +225,20 @@ def upload_file(project_root, rel_file_path, cfg):
         upload_file_ftp(project_root, rel_file_path, cfg)
 
 
-class SingleFileHandler(FileSystemEventHandler):
-    def __init__(self, project_root, target_path, cfg):
+class MultiFileHandler(FileSystemEventHandler):
+    def __init__(self, project_root, target_paths: list[str], cfg):
         super().__init__()
         self.project_root = os.path.abspath(project_root)
-        self.target_path = os.path.abspath(target_path)
+        self.target_paths = list(map(lambda x: os.path.abspath(x), target_paths))
         self.cfg = cfg
 
     def _maybe_upload(self, event_path):
         changed = os.path.abspath(event_path)
-        if changed == self.target_path:
-            print(f"[INFO] Detected change: {changed}")
-            rel = os.path.relpath(self.target_path, self.project_root)
-            time.sleep(0.2)
-            upload_file(self.project_root, rel, self.cfg)
+        if changed in self.target_paths:
+            rel = os.path.relpath(changed, self.project_root)
+            t = threading.Thread(target=upload_file, args=(self.project_root, rel, self.cfg))
+            t.start()
+            
 
     def on_modified(self, event):
         if event.is_directory:
@@ -252,14 +252,18 @@ class SingleFileHandler(FileSystemEventHandler):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: python auto_ftp.py <project_root_folder> <relative_file_path>")
-        print("Example: python auto_ftp.py /path/to/project src/styles/main.scss")
+    if len(sys.argv) < 3:
+        print("Usage: python main.py <project_root_folder> <relative_file_paths...>")
+        print("Example: python main.py /path/to/project src/styles/main.scss src/main.js")
         sys.exit(1)
+    
 
     project_root = sys.argv[1]
-    rel_file_path = sys.argv[2]
-    target_file = os.path.join(project_root, rel_file_path)
+    abs_fl = lambda rel_fl: os.path.join(project_root, rel_fl )
+
+    rel_fl_paths = []
+    for i in range(2, len(sys.argv)):
+        rel_fl_paths.append(abs_fl(sys.argv[i]))
 
     if not os.path.exists(project_root) or not os.path.isdir(project_root):
         print(f"[ERROR] Project root is not a directory: {project_root}")
@@ -267,12 +271,12 @@ def main():
 
     cfg = load_ftp_config(project_root)
 
-    event_handler = SingleFileHandler(project_root, target_file, cfg)
+    event_handler = MultiFileHandler(project_root, rel_fl_paths, cfg)
     observer = Observer()
-    watch_dir = os.path.dirname(target_file)
+    watch_dir = os.path.dirname(os.path.join(project_root, "*"))
     observer.schedule(event_handler, watch_dir, recursive=False)
 
-    print(f"[INFO] Watching {target_file} for changes using protocol '{cfg.get('protocol', 'ftp')}'...")
+    print(f"[INFO] Watching {project_root} for changes using protocol '{cfg.get('protocol', 'ftp')}'...")
     observer.start()
 
     try:
