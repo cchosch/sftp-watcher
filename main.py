@@ -271,21 +271,39 @@ def main():
 
     cfg = load_ftp_config(project_root)
 
-    event_handler = MultiFileHandler(project_root, rel_fl_paths, cfg)
-    observer = Observer()
-    watch_dir = os.path.dirname(os.path.join(project_root, "*"))
-    observer.schedule(event_handler, watch_dir, recursive=False)
 
-    print(f"[INFO] Watching {project_root} for changes using protocol '{cfg.get('protocol', 'ftp')}'...")
-    observer.start()
+    file_parents = list(map(lambda x: (str(pathlib.Path(os.path.join(project_root, x)).parent), x), rel_fl_paths))
+    watcher_map = {}
+    for fl_parent in file_parents:
+        if fl_parent[0] in watcher_map:
+            watcher_map[fl_parent[0]].append(fl_parent[1])
+        else:
+            watcher_map[fl_parent[0]] = [fl_parent[1]]
+
+    observers = []
+    for watch_d, paths in watcher_map.items():
+        event_handler = MultiFileHandler(watch_d, paths, cfg)
+
+        watch_dir = os.path.dirname(os.path.join(watch_d, "*"))
+        o = Observer()
+        o.schedule(event_handler, watch_dir, recursive=False)
+        observers.append(o)
+
+    watching = ", ".join(list(watcher_map.keys()))
+    print(f"[INFO] Watching {watching} for changes using protocol '{cfg.get('protocol', 'ftp')}'...")
+    for o in observers:
+        o.start()
 
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("[INFO] Stopping observer...")
-        observer.stop()
-    observer.join()
+        print("[INFO] Stopping observers...")
+        for o in observers:
+            o.stop()
+
+    for o in observers:
+        o.join()
 
 
 if __name__ == "__main__":
