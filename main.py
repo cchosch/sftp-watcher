@@ -32,6 +32,9 @@ def load_ftp_config(project_root):
     if "protocol" not in cfg:
         cfg["protocol"] = "ftp"
 
+    if "transferFiles" not in cfg:
+        cfg["transferFiles"] = []
+
     return cfg
 
 
@@ -252,27 +255,29 @@ class MultiFileHandler(FileSystemEventHandler):
 
 
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: python main.py <project_root_folder> <relative_file_paths...>")
+    if len(sys.argv) < 2:
+        print("Usage: python main.py <project_root_folder> <relative_file_paths?...>")
         print("Example: python main.py /path/to/project src/styles/main.scss src/main.js")
         sys.exit(1)
     
 
     project_root = sys.argv[1]
-    abs_fl = lambda rel_fl: os.path.join(project_root, rel_fl )
-
-    rel_fl_paths = []
-    for i in range(2, len(sys.argv)):
-        rel_fl_paths.append(abs_fl(sys.argv[i]))
-
     if not os.path.exists(project_root) or not os.path.isdir(project_root):
         print(f"[ERROR] Project root is not a directory: {project_root}")
         sys.exit(1)
 
     cfg = load_ftp_config(project_root)
 
+    abs_file_paths = []
+    for i in range(2, len(sys.argv)):
+        abs_file_paths.append(os.path.join(project_root, sys.argv[i]))
 
-    file_parents = list(map(lambda x: (str(pathlib.Path(os.path.join(project_root, x)).parent), x), rel_fl_paths))
+    for rel_fl in cfg["transferFiles"]:
+        abs_file_paths.append(os.path.join(project_root, rel_fl))
+
+    abs_file_paths = list(set(abs_file_paths))
+
+    file_parents = list(map(lambda x: (str(pathlib.Path(os.path.join(project_root, x)).parent), x), abs_file_paths))
     watcher_map = {}
     for fl_parent in file_parents:
         if fl_parent[0] in watcher_map:
@@ -282,14 +287,20 @@ def main():
 
     observers = []
     for watch_d, paths in watcher_map.items():
-        event_handler = MultiFileHandler(watch_d, paths, cfg)
+        # cfg["remotePath"] = 
+        l_cfg = cfg.copy()
+        rp = os.path.relpath(watch_d, project_root)
+        if rp != ".":
+            l_cfg["remotePath"] = os.path.join(cfg["remotePath"], rp)
+            
+        event_handler = MultiFileHandler(watch_d, paths, l_cfg)
 
         watch_dir = os.path.dirname(os.path.join(watch_d, "*"))
         o = Observer()
         o.schedule(event_handler, watch_dir, recursive=False)
         observers.append(o)
 
-    watching = ", ".join(list(watcher_map.keys()))
+    watching = ", ".join(watcher_map.keys())
     print(f"[INFO] Watching {watching} for changes using protocol '{cfg.get('protocol', 'ftp')}'...")
     for o in observers:
         o.start()
